@@ -120,6 +120,7 @@ export function useMediaRecorder() {
         const s = await getWebcam()
         setupRecorder(s)
         setStatus("📷 Webcam live")
+        return s // ← return stream so callers can use it immediately
 
       } else if (selectedMode === "screen") {
         const screen = await getScreen()
@@ -145,7 +146,17 @@ export function useMediaRecorder() {
   }, [getWebcam, getScreen, setupMicVisualizer, setupRecorder])
 
   const switchMode = useCallback(async (newMode) => {
-    if (newMode === modeRef.current) return
+    // If clicking the SAME mode that involves a screen,
+    // retrigger the screen picker so user can switch sources.
+    // If same mode with no screen (webcam only), do nothing.
+    if (newMode === modeRef.current) {
+      if (newMode === "screen" || newMode === "both") {
+        stopScreenTracks()
+        // fall through to re-run the mode logic below
+      } else {
+        return
+      }
+    }
     if (isRecording) {
       setStatus("⚠️ Stop recording before switching modes")
       setTimeout(() => setStatus("🔴 Recording..."), 2500)

@@ -82,13 +82,17 @@ function App() {
   }, [startRecordingFromCanvas])
 
   const handleCreateRoom = useCallback(async () => {
-    if (!webcamStream) await startCamera("webcam")
-    createRoom(webcamStream)
+    // startCamera returns the stream directly so we don't
+    // rely on React state (which updates asynchronously)
+    const stream = webcamStream || await startCamera("webcam")
+    if (!stream) return
+    createRoom(stream)
   }, [webcamStream, startCamera, createRoom])
 
   const handleJoinRoom = useCallback(async (code) => {
-    if (!webcamStream) await startCamera("webcam")
-    joinRoom(code, webcamStream)
+    const stream = webcamStream || await startCamera("webcam")
+    if (!stream) return
+    joinRoom(code, stream)
   }, [webcamStream, startCamera, joinRoom])
 
   return (

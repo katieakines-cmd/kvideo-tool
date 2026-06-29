@@ -1,6 +1,6 @@
 // hooks/useWebRTC.js
-// Updated: screen sharing between participants via track replacement
-// and automatic renegotiation when tracks change.
+// Fixed: race condition where onnegotiationneeded fired before
+// guest joined, causing duplicate offers and state errors.
 
 import { useRef, useState, useCallback, useEffect } from "react"
 
@@ -10,27 +10,195 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+    {
+      urls: "turn:global.relay.metered.ca:80",
+      username: "8c623e582754c770f9180582",
+      credential: "gMud+HnoDGAzKFX1",
+    },
+    {
+      urls: "turn:global.relay.metered.ca:80?transport=tcp",
+      username: "8c623e582754c770f9180582",
+      credential: "gMud+HnoDGAzKFX1",
+    },
+    {
+      urls: "turn:global.relay.metered.ca:443",
+      username: "8c623e582754c770f9180582",
+      credential: "gMud+HnoDGAzKFX1",
+    },
+    {
+      urls: "turns:global.relay.metered.ca:443?transport=tcp",
+      username: "8c623e582754c770f9180582",
+      credential: "gMud+HnoDGAzKFX1",
+    },
   ],
 }
 
 export function useWebRTC({ onStartRecording, onStopRecording }) {
-  const [roomCode,     setRoomCode]     = useState(null)
-  const [participants, setParticipants] = useState(0)
-  const [isConnected,  setIsConnected]  = useState(false)
-  const [peerStreams,  setPeerStreams]   = useState([])
-  const [peerScreenStreams, setPeerScreenStreams] = useState([]) // NEW: peer screen shares
-  const [error,        setError]        = useState(null)
+  const [roomCode,          setRoomCode]          = useState(null)
+  const [participants,      setParticipants]      = useState(0)
+  const [isConnected,       setIsConnected]       = useState(false)
+  const [peerStreams,       setPeerStreams]        = useState([])
+  const [peerScreenStreams, setPeerScreenStreams]  = useState([])
+  const [error,             setError]             = useState(null)
 
-  const wsRef          = useRef(null)
-  const pcRef          = useRef(null)
-  const isHostRef      = useRef(false)
-  const roomCodeRef    = useRef(null)
-  const localStreamRef = useRef(null)
-
-  // ── NEW: track screen share sender so we can replace/remove it ──────────
-  // A "sender" is a reference to a specific outgoing track in the peer conn.
-  // We keep it in a ref so we can replace it when screen sharing changes.
+  const wsRef           = useRef(null)
+  const pcRef           = useRef(null)
+  const isHostRef       = useRef(false)
+  const roomCodeRef     = useRef(null)
+  const localStreamRef  = useRef(null)
   const screenSenderRef = useRef(null)
+
+  // ── Negotiation state refs ─────────────────────────────────────────────
+  // These live outside React state so they don't cause re-renders.
+  // isNegotiatingRef: true when offer/answer is in flight — blocks new offers
+  // readyToNegotiateRef: false until we're in a room — blocks premature offers
+  const isNegotiatingRef    = useRef(false)
+  const readyToNegotiateRef = useRef(false)
+
+  const sendToServer = useCallback((data) => {
+    const ws = wsRef.current
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data))
+  }, [])
+
+  // ── createOffer — with state guards ───────────────────────────────────
+  // Only sends an offer if:
+  //   1. We're ready (in a room)
+  //   2. Not already negotiating
+  //   3. Peer connection is in "stable" state
+  const createOffer = useCallback(async () => {
+    const pc = pcRef.current
+    if (!pc) return
+    if (!readyToNegotiateRef.current) {
+      console.log("Not ready to negotiate yet — skipping offer")
+      return
+    }
+    if (isNegotiatingRef.current) {
+      console.log("Already negotiating — skipping duplicate offer")
+      return
+    }
+    if (pc.signalingState !== "stable") {
+      console.log("Not in stable state — skipping offer:", pc.signalingState)
+      return
+    }
+
+    console.log("Creating offer")
+    isNegotiatingRef.current = true
+    try {
+      const offer = await pc.createOffer()
+      if (pc.signalingState !== "stable") return // check again after await
+      await pc.setLocalDescription(offer)
+      sendToServer({ type: "offer", offer })
+    } catch (err) {
+      console.error("createOffer failed:", err)
+      isNegotiatingRef.current = false
+    }
+  }, [sendToServer])
+
+  const createPeerConnection = useCallback((localStream) => {
+    const pc = new RTCPeerConnection(ICE_SERVERS)
+    pcRef.current = pc
+
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream))
+
+    pc.ontrack = (event) => {
+      const [remoteStream] = event.streams
+      if (!remoteStream) return
+      const hasAudio = remoteStream.getAudioTracks().length > 0
+      if (hasAudio) {
+        setPeerStreams(prev => {
+          if (prev.find(s => s.id === remoteStream.id)) return prev
+          return [...prev, remoteStream]
+        })
+      } else {
+        setPeerScreenStreams(prev => {
+          if (prev.find(s => s.id === remoteStream.id)) return prev
+          return [...prev, remoteStream]
+        })
+      }
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendToServer({ type: "ice-candidate", candidate: event.candidate })
+      }
+    }
+
+    // ── Race condition fix ─────────────────────────────────────────────
+    // onnegotiationneeded fires the moment we call addTrack() above.
+    // But at that point the guest hasn't joined yet — if we send an offer
+    // now, there's nobody to receive it. We guard with readyToNegotiateRef.
+    pc.onnegotiationneeded = async () => {
+      await createOffer()
+    }
+
+    // Reset isNegotiating when signaling returns to stable state
+    // (after a complete offer/answer exchange)
+    pc.onsignalingstatechange = () => {
+      console.log("Signaling state:", pc.signalingState)
+      if (pc.signalingState === "stable") {
+        isNegotiatingRef.current = false
+      }
+    }
+
+    pc.onconnectionstatechange = () => {
+      console.log("Peer state:", pc.connectionState)
+      if (pc.connectionState === "failed") {
+        setError("Connection to peer failed. Try rejoining.")
+      }
+    }
+
+    return pc
+  }, [sendToServer, createOffer])
+
+  const handleOffer = useCallback(async (offer) => {
+    const pc = pcRef.current
+    if (!pc) return
+
+    // Guard: only set remote description if we're in the right state
+    if (pc.signalingState !== "stable") {
+      console.warn("Received offer in non-stable state:", pc.signalingState)
+      return
+    }
+
+    isNegotiatingRef.current = true
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(offer))
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      sendToServer({ type: "answer", answer })
+    } catch (err) {
+      console.error("handleOffer failed:", err)
+      isNegotiatingRef.current = false
+    }
+  }, [sendToServer])
+
+  const handleAnswer = useCallback(async (answer) => {
+    const pc = pcRef.current
+    if (!pc) return
+
+    // Guard: only accept answer if we're expecting one
+    if (pc.signalingState !== "have-local-offer") {
+      console.warn("Received answer in wrong state:", pc.signalingState)
+      return
+    }
+
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer))
+    } catch (err) {
+      console.error("handleAnswer failed:", err)
+    }
+  }, [])
+
+  const handleIceCandidate = useCallback(async (candidate) => {
+    const pc = pcRef.current
+    if (!pc || !candidate) return
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate))
+    } catch (err) {
+      console.error("ICE candidate error:", err)
+    }
+  }, [])
 
   const connectToServer = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -38,11 +206,7 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
     const ws = new WebSocket(SERVER_URL)
     wsRef.current = ws
 
-    ws.onopen = () => {
-      setIsConnected(true)
-      setError(null)
-    }
-
+    ws.onopen  = () => { setIsConnected(true); setError(null) }
     ws.onclose = () => setIsConnected(false)
     ws.onerror = () => {
       setError("Could not connect to server. Is kvideo-server running?")
@@ -64,11 +228,15 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
           setRoomCode(msg.roomCode)
           roomCodeRef.current = msg.roomCode
           setParticipants(2)
+          // Guest is now in the room — allow negotiation
+          readyToNegotiateRef.current = true
           break
 
         case "guest-joined":
           setParticipants(msg.guestCount + 1)
-          if (isHostRef.current) await createOffer()
+          // Host: guest is here — NOW it's safe to send the offer
+          readyToNegotiateRef.current = true
+          await createOffer()
           break
 
         case "guest-left":
@@ -105,160 +273,37 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
           break
       }
     }
-  }, [onStartRecording, onStopRecording])
+  }, [createOffer, handleOffer, handleAnswer, handleIceCandidate,
+      onStartRecording, onStopRecording])
 
-  const sendToServer = useCallback((data) => {
-    const ws = wsRef.current
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data))
-    }
-  }, [])
-
-  const createPeerConnection = useCallback((localStream) => {
-    const pc = new RTCPeerConnection(ICE_SERVERS)
-    pcRef.current = pc
-
-    // Add local webcam/mic tracks
-    localStream.getTracks().forEach(track => {
-      pc.addTrack(track, localStream)
-    })
-
-    // ── Handle incoming tracks from peer ──────────────────────────────
-    // Each track arrives with metadata about what KIND it is.
-    // We use the stream's track count to distinguish webcam vs screen:
-    //   stream with audio+video = webcam
-    //   stream with video only  = screen share
-    //
-    // A more robust approach (Phase 5) would be to send metadata
-    // alongside the offer, but track count works well for now.
-    pc.ontrack = (event) => {
-      const [remoteStream] = event.streams
-      const hasAudio = remoteStream.getAudioTracks().length > 0
-
-      if (hasAudio) {
-        // Webcam stream (has both video + audio)
-        setPeerStreams(prev => {
-          if (prev.find(s => s.id === remoteStream.id)) return prev
-          return [...prev, remoteStream]
-        })
-      } else {
-        // Screen share stream (video only, no audio)
-        setPeerScreenStreams(prev => {
-          if (prev.find(s => s.id === remoteStream.id)) return prev
-          return [...prev, remoteStream]
-        })
-      }
-    }
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendToServer({ type: "ice-candidate", candidate: event.candidate })
-      }
-    }
-
-    // ── Renegotiation ─────────────────────────────────────────────────
-    // When we add or remove a track (e.g. starting screen share),
-    // the browser fires this event telling us to create a new offer.
-    // This is called "renegotiation" — updating an existing connection.
-    // Without this, the peer would never know about the new track.
-    pc.onnegotiationneeded = async () => {
-      console.log("Renegotiation needed — creating new offer")
-      try {
-        await createOffer()
-      } catch (err) {
-        console.error("Renegotiation failed:", err)
-      }
-    }
-
-    pc.onconnectionstatechange = () => {
-      console.log("Peer state:", pc.connectionState)
-      if (pc.connectionState === "failed") {
-        setError("Connection to peer failed. Try rejoining.")
-      }
-    }
-
-    return pc
-  }, [sendToServer])
-
-  const createOffer = useCallback(async () => {
-    const pc = pcRef.current
-    if (!pc) return
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    sendToServer({ type: "offer", offer })
-  }, [sendToServer])
-
-  const handleOffer = useCallback(async (offer) => {
-    const pc = pcRef.current
-    if (!pc) return
-    await pc.setRemoteDescription(new RTCSessionDescription(offer))
-    const answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    sendToServer({ type: "answer", answer })
-  }, [sendToServer])
-
-  const handleAnswer = useCallback(async (answer) => {
-    const pc = pcRef.current
-    if (!pc) return
-    await pc.setRemoteDescription(new RTCSessionDescription(answer))
-  }, [])
-
-  const handleIceCandidate = useCallback(async (candidate) => {
-    const pc = pcRef.current
-    if (!pc) return
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate))
-    } catch (err) {
-      console.error("ICE candidate error:", err)
-    }
-  }, [])
-
-  // ── Share screen to peer ───────────────────────────────────────────────
-  // Adds the screen video track to the peer connection.
-  // If we were already sharing a screen, REPLACE the old track.
-  // This triggers onnegotiationneeded which sends a new offer automatically.
-  //
-  // Python analogy: like replacing a value in a shared dict —
-  // the other side sees the update without reconnecting.
   const shareScreen = useCallback(async (screenStream) => {
     const pc = pcRef.current
     if (!pc) return
-
     const screenTrack = screenStream.getVideoTracks()[0]
     if (!screenTrack) return
-
     if (screenSenderRef.current) {
-      // Already sharing — replace the track (no renegotiation needed for replace)
       await screenSenderRef.current.replaceTrack(screenTrack)
     } else {
-      // First time sharing — add a new sender (triggers renegotiation)
       const sender = pc.addTrack(screenTrack, screenStream)
       screenSenderRef.current = sender
     }
-
-    // When user stops sharing via browser's stop button
-    screenTrack.onended = () => {
-      stopSharingScreen()
-    }
+    screenTrack.onended = () => stopSharingScreen()
   }, [])
 
-  // ── Stop sharing screen to peer ────────────────────────────────────────
   const stopSharingScreen = useCallback(() => {
     const pc = pcRef.current
     if (!pc || !screenSenderRef.current) return
-
-    // Remove the screen track sender from the connection
-    // This triggers renegotiation — peer sees the track disappear
     pc.removeTrack(screenSenderRef.current)
     screenSenderRef.current = null
-
-    // Clear peer screen streams on our end
     setPeerScreenStreams([])
   }, [])
 
   const createRoom = useCallback(async (localStream) => {
     localStreamRef.current = localStream
     isHostRef.current = true
+    // Reset negotiation state for fresh session
+    isNegotiatingRef.current = false
+    readyToNegotiateRef.current = false
     createPeerConnection(localStream)
     sendToServer({ type: "create-room" })
   }, [createPeerConnection, sendToServer])
@@ -266,6 +311,8 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
   const joinRoom = useCallback(async (code, localStream) => {
     localStreamRef.current = localStream
     isHostRef.current = false
+    isNegotiatingRef.current = false
+    readyToNegotiateRef.current = false
     createPeerConnection(localStream)
     sendToServer({ type: "join-room", roomCode: code.toUpperCase() })
   }, [createPeerConnection, sendToServer])
@@ -286,6 +333,8 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
     wsRef.current?.close()
     wsRef.current = null
     screenSenderRef.current = null
+    isNegotiatingRef.current = false
+    readyToNegotiateRef.current = false
     setPeerStreams([])
     setPeerScreenStreams([])
     setRoomCode(null)
@@ -301,19 +350,11 @@ export function useWebRTC({ onStartRecording, onStopRecording }) {
   }, [connectToServer])
 
   return {
-    roomCode,
-    participants,
-    isConnected,
-    peerStreams,
-    peerScreenStreams, // NEW: expose peer screen streams
-    error,
+    roomCode, participants, isConnected,
+    peerStreams, peerScreenStreams, error,
     isHost: isHostRef.current,
-    createRoom,
-    joinRoom,
-    leaveRoom,
-    startRecording,
-    stopRecording,
-    shareScreen,        // NEW
-    stopSharingScreen,  // NEW
+    createRoom, joinRoom, leaveRoom,
+    startRecording, stopRecording,
+    shareScreen, stopSharingScreen,
   }
 }
