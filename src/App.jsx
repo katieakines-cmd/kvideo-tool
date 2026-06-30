@@ -16,6 +16,7 @@ import { styles } from "./styles/styles"
 
 function App() {
   const [webcamShape, setWebcamShape] = useState("rounded")
+  const [mirrorMode, setMirrorMode] = useState("off")
   const [background, setBackground] = useState({ id: "none", type: "none", value: null, label: "None" })
   const [customBackgrounds, setCustomBackgrounds] = useState([])
   const [bubblePos,   setBubblePos]   = useState(null)
@@ -155,6 +156,7 @@ function App() {
               bubblePos={bubblePos}
               onBubblePosChange={setBubblePos}
               background={background}
+              mirrorMode={mirrorMode}
             />
           ) : (
             <div style={styles.videoBoxPlaceholder}>
@@ -208,6 +210,8 @@ function App() {
         mode={mode}
         webcamShape={webcamShape}
         onShapeChange={setWebcamShape}
+        mirrorMode={mirrorMode}
+        onMirrorChange={setMirrorMode}
         startCamera={() => startCamera(mode)}
         startRecording={startRecording}
         stopRecording={stopRecording}
