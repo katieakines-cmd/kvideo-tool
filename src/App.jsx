@@ -12,6 +12,8 @@ import RoomControls from "./components/RoomControls"
 import Controls from "./components/Controls"
 import TakesLibrary from "./components/TakesLibrary"
 import BackgroundPicker from "./components/BackgroundPicker"
+import AudioSourceSelector from "./components/AudioSourceSelector"
+import { useAudioMixer } from "./hooks/useAudioMixer"
 import { styles } from "./styles/styles"
 
 function App() {
@@ -19,6 +21,15 @@ function App() {
   const [mirrorMode, setMirrorMode] = useState("off")
   const [background, setBackground] = useState({ id: "none", type: "none", value: null, label: "None" })
   const [customBackgrounds, setCustomBackgrounds] = useState([])
+
+  const {
+    devices,
+    selectedDeviceId,
+    systemAudioOn,
+    initWithStream,
+    switchMic,
+    toggleSystemAudio,
+  } = useAudioMixer()
   const [bubblePos,   setBubblePos]   = useState(null)
 
   const {
@@ -60,7 +71,8 @@ function App() {
 
   const handleModeSelect = useCallback(async (newMode) => {
     if (!hasStream) {
-      await startCamera(newMode)
+      const stream = await startCamera(newMode)
+      if (stream) initWithStream(stream)
     } else {
       await switchMode(newMode)
     }
@@ -86,18 +98,18 @@ function App() {
   }, [startRecordingFromCanvas])
 
   const handleCreateRoom = useCallback(async () => {
-    // startCamera returns the stream directly so we don't
-    // rely on React state (which updates asynchronously)
     const stream = webcamStream || await startCamera("webcam")
     if (!stream) return
+    initWithStream(stream)
     createRoom(stream)
-  }, [webcamStream, startCamera, createRoom])
+  }, [webcamStream, startCamera, createRoom, initWithStream])
 
   const handleJoinRoom = useCallback(async (code) => {
     const stream = webcamStream || await startCamera("webcam")
     if (!stream) return
+    initWithStream(stream)
     joinRoom(code, stream)
-  }, [webcamStream, startCamera, joinRoom])
+  }, [webcamStream, startCamera, joinRoom, initWithStream])
 
   return (
     <div style={styles.app}>
@@ -137,6 +149,18 @@ function App() {
             setCustomBackgrounds(prev => [...prev, newBg])
             setBackground(newBg)
           }}
+        />
+      )}
+
+      {/* Audio source selector — shown when stream is live */}
+      {hasStream && (
+        <AudioSourceSelector
+          devices={devices}
+          selectedDeviceId={selectedDeviceId}
+          onDeviceChange={(id) => switchMic(id)}
+          systemAudioOn={systemAudioOn}
+          onSystemAudioToggle={() => toggleSystemAudio(screenStream, webcamStream)}
+          showSystemAudio={mode === "screen" || mode === "both"}
         />
       )}
 
