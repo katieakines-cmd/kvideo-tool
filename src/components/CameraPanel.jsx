@@ -11,7 +11,7 @@ const CANVAS_H = 720
 
 function CameraPanel({
   webcamStream, screenStream, mode, webcamShape,
-  onCanvasReady, bubblePos, onBubblePosChange
+  onCanvasReady, bubblePos, onBubblePosChange, background
 }) {
   const videoRef    = useRef(null)
   const wrapperRef  = useRef(null)
@@ -24,6 +24,7 @@ function CameraPanel({
     webcamStream:   useCanvas ? webcamStream : null,
     webcamShape,
     webcamPosition: bubblePos,
+    background,
   })
 
   useEffect(() => {

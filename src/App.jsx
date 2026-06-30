@@ -11,10 +11,13 @@ import ModeSelector from "./components/ModeSelector"
 import RoomControls from "./components/RoomControls"
 import Controls from "./components/Controls"
 import TakesLibrary from "./components/TakesLibrary"
+import BackgroundPicker from "./components/BackgroundPicker"
 import { styles } from "./styles/styles"
 
 function App() {
   const [webcamShape, setWebcamShape] = useState("rounded")
+  const [background, setBackground] = useState({ id: "none", type: "none", value: null, label: "None" })
+  const [customBackgrounds, setCustomBackgrounds] = useState([])
   const [bubblePos,   setBubblePos]   = useState(null)
 
   const {
@@ -123,6 +126,19 @@ function App() {
         isLive={hasStream}
       />
 
+      {/* Background picker — only relevant when webcam is involved */}
+      {(mode === "webcam" || mode === "both") && (
+        <BackgroundPicker
+          selectedBackground={background}
+          onSelect={setBackground}
+          customBackgrounds={customBackgrounds}
+          onUpload={(newBg) => {
+            setCustomBackgrounds(prev => [...prev, newBg])
+            setBackground(newBg)
+          }}
+        />
+      )}
+
       <div style={styles.content}>
         <MicVisualizer micLevel={micLevel} />
 
@@ -138,6 +154,7 @@ function App() {
               onCanvasReady={handleCanvasReady}
               bubblePos={bubblePos}
               onBubblePosChange={setBubblePos}
+              background={background}
             />
           ) : (
             <div style={styles.videoBoxPlaceholder}>
