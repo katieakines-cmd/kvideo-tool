@@ -1,7 +1,8 @@
 // components/Controls.jsx
 // Phase 4: added mirror/reflection toggle
 
-import { styles } from "../styles/styles"
+// styles is now passed in as a prop (built from the live theme in Studio.jsx)
+// instead of imported statically, so buttons re-color with the brand.
 
 const SHAPES = [
   { id: "square",  label: "▣ Square"  },
@@ -20,6 +21,7 @@ function Controls({
   webcamShape, onShapeChange,
   mirrorMode, onMirrorChange,
   startCamera, startRecording, stopRecording,
+  styles,
 }) {
   const showWebcamControls = hasStream && (mode === "webcam" || mode === "both")
 

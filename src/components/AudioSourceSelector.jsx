@@ -2,8 +2,6 @@
 // UI for selecting microphone and toggling system audio.
 // Appears below the mode selector, only when a stream is live.
 
-import { colors } from "../styles/styles"
-
 function AudioSourceSelector({
   devices,           // array of audioinput MediaDeviceInfo objects
   selectedDeviceId,  // currently selected device ID

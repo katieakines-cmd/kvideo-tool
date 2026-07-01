@@ -6,7 +6,9 @@
 //   3. In a room as guest → show connected status + participant count
 
 import { useState } from "react"
-import { colors } from "../styles/styles"
+
+// colors is now passed in as a prop (built from the live theme in Studio.jsx)
+// instead of imported statically, so the room code color etc. follow the brand.
 
 function RoomControls({
   isConnected,    // bool: connected to signaling server?
@@ -20,9 +22,11 @@ function RoomControls({
   isRecording,    // bool: is recording active?
   onStartRecording, // fn: host starts recording for everyone
   onStopRecording,  // fn: host stops recording for everyone
+  colors,         // theme-derived color tokens
 }) {
   const [codeInput, setCodeInput] = useState("")
   const [copied,    setCopied]    = useState(false)
+  const t = themedStyles(colors)
 
   // Copy room code to clipboard with visual feedback
   const copyCode = () => {
@@ -63,7 +67,7 @@ function RoomControls({
           {isHost && (
             <div style={codeBox}>
               <span style={codeLabel}>Room code</span>
-              <span style={codeValue}>{roomCode}</span>
+              <span style={t.codeValue}>{roomCode}</span>
               <button style={copyBtn} onClick={copyCode}>
                 {copied ? "✓ Copied!" : "Copy"}
               </button>
@@ -73,11 +77,11 @@ function RoomControls({
           {/* Recording controls — host only */}
           {isHost && (
             !isRecording ? (
-              <button style={recBtn} onClick={onStartRecording}>
+              <button style={t.recBtn} onClick={onStartRecording}>
                 ● Record Everyone
               </button>
             ) : (
-              <button style={stopBtn} onClick={onStopRecording}>
+              <button style={t.stopBtn} onClick={onStopRecording}>
                 🔴 Stop Everyone
               </button>
             )
@@ -90,7 +94,7 @@ function RoomControls({
 
         </div>
 
-        {error && <p style={errorText}>{error}</p>}
+        {error && <p style={t.errorText}>{error}</p>}
       </div>
     )
   }
@@ -106,7 +110,7 @@ function RoomControls({
         </div>
 
         {/* Create room */}
-        <button style={createBtn} onClick={onCreateRoom}>
+        <button style={t.createBtn} onClick={onCreateRoom}>
           + Create Room
         </button>
 
@@ -120,7 +124,7 @@ function RoomControls({
             maxLength={6}
           />
           <button
-            style={joinBtn}
+            style={t.joinBtn}
             onClick={() => onJoinRoom(codeInput)}
             disabled={codeInput.length < 6}
           >
@@ -130,7 +134,7 @@ function RoomControls({
 
       </div>
 
-      {error && <p style={errorText}>{error}</p>}
+      {error && <p style={t.errorText}>{error}</p>}
     </div>
   )
 }
@@ -200,14 +204,6 @@ const codeLabel = {
   color: "#94a3b8",
 }
 
-const codeValue = {
-  fontFamily: "monospace",
-  fontWeight: "700",
-  fontSize: "16px",
-  color: colors.brand,
-  letterSpacing: "0.1em",
-}
-
 const copyBtn = {
   fontSize: "12px",
   padding: "2px 8px",
@@ -225,30 +221,6 @@ const baseBtn = {
   borderRadius: "8px",
   border: "none",
   cursor: "pointer",
-}
-
-const createBtn = {
-  ...baseBtn,
-  background: colors.brand,
-  color: "white",
-}
-
-const joinBtn = {
-  ...baseBtn,
-  background: colors.blue.mid,
-  color: "white",
-}
-
-const recBtn = {
-  ...baseBtn,
-  background: colors.green,
-  color: "white",
-}
-
-const stopBtn = {
-  ...baseBtn,
-  background: colors.red,
-  color: "white",
 }
 
 const leaveBtn = {
@@ -270,10 +242,24 @@ const input = {
   textTransform: "uppercase",
 }
 
-const errorText = {
-  color: colors.red,
-  fontSize: "13px",
-  margin: 0,
+// ── Color-dependent styles ─────────────────────────────────────────────────
+// These depend on the live theme, so they're built fresh from the `colors`
+// prop each render instead of being static module-level constants.
+function themedStyles(colors) {
+  return {
+    codeValue: {
+      fontFamily: "monospace",
+      fontWeight: "700",
+      fontSize: "16px",
+      color: colors.brand,
+      letterSpacing: "0.1em",
+    },
+    createBtn: { ...baseBtn, background: colors.brand, color: "white" },
+    joinBtn:   { ...baseBtn, background: colors.blue.mid, color: "white" },
+    recBtn:    { ...baseBtn, background: colors.green, color: "white" },
+    stopBtn:   { ...baseBtn, background: colors.red, color: "white" },
+    errorText: { color: colors.red, fontSize: "13px", margin: 0 },
+  }
 }
 
 export default RoomControls
